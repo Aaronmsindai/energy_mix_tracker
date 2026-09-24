@@ -8,7 +8,8 @@ Schema:
     fact_energy_mix:     Cleaned analytics-ready energy mix
 """
 
-from datetime import datetime
+from datetime import datetime,
+timezone
 
 from sqlalchemy import (
     Column,
@@ -55,7 +56,10 @@ class RawGeneration(Base):
     __tablename__ = "raw_generation"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    fetched_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    fetched_at = Column(DateTime, 
+    default=lambda:
+    Datetime.now(timezone.utc).replace(tzinfo=None),
+    Nullable=False)
     api_from = Column(DateTime, nullable=False)
     api_to = Column(DateTime, nullable=False)
     raw_json = Column(String, nullable=False)
