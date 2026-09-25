@@ -14,7 +14,10 @@ import streamlit as st
 from sqlalchemy import create_engine
 
 
-DB_URL = os.getenv("DATABASE_URL", "postgresql://localhost/energy_tracker")
+try:
+    DB_URL = st.secrets["DATABASE_URL"]
+except (KeyError, FileNotFoundError):
+    DB_URL = os.getenv("DATABASE_URL", "postgresql://localhost/energy_tracker")
 
 st.set_page_config(page_title="UK Energy Mix Tracker", page_icon="⚡", layout="wide")
 
