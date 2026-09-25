@@ -61,7 +61,7 @@ Prerequisites
 Setup
 
 ```bash
-git clone git@github.com:Deodael/energy_mix_tracker.git
+git clone git@github.com:Aaronmsindai/energy_mix_tracker.git
 cd energy_mix_tracker
 python3 -m venv venv
 source venv/bin/activate
