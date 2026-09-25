@@ -44,6 +44,13 @@ Testing Pytest
 · Live dashboard — metric cards, donut chart, trend line, source ranking
 · Zero-config scheduler — plain Python loop, no heavyweight orchestration
 
+## ⚠️ Note on Cold Starts
+
+This app is deployed on Streamlit Community Cloud (free tier), which
+sleeps after 15 minutes of inactivity. The first visit may take 30–60
+seconds to wake up both the Streamlit server and the Neon database.
+After that, the app is instant.
+
 🚀 How to Run Locally
 
 Prerequisites
