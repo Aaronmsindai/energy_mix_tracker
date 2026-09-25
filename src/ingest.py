@@ -1,5 +1,5 @@
 """
-Ingestion script - pull UK energy mix data from the Carbon Intensity API
+Ingestion script — pull UK energy mix data from the Carbon Intensity API
 and store it in PostgreSQL.
 
 Flow:
@@ -7,16 +7,18 @@ Flow:
     2. Store raw JSON in raw_generation (audit)
     3. Parse fuel mix -> insert into fact_energy_mix
     4. Look up dimension IDs
+    5. Idempotent: skip rows that already exist
 
 Run:
     python -m src.ingest
 """
 
 import json
-from datetime import datetime,timezone
+from datetime import datetime, timezone
 
 import requests
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.db import get_session, init_db
 from src.models import DimCountry, DimEnergySource, FactEnergyMix, RawGeneration
@@ -40,7 +42,7 @@ def parse_timestamps(period_str: str) -> datetime:
 
 
 def ingest() -> dict:
-    """Run the full ingestion: fetch -> store raw -> insert fact rows."""
+    """Run the full ingestion: fetch -> store raw -> insert fact rows (idempotent)."""
     init_db()
     session = get_session()
 
@@ -75,9 +77,12 @@ def ingest() -> dict:
             for s in session.execute(select(DimEnergySource)).scalars()
         }
 
-        # 4. Insert one fact row per energy source
+        # 4. Insert one fact row per energy source, skip duplicates
         inserted = 0
         skipped = 0
+        period_start_naive = period_from.replace(tzinfo=None)
+        period_end_naive = period_to.replace(tzinfo=None)
+
         for item in mix:
             fuel = item["fuel"]
             if fuel not in source_map:
@@ -85,18 +90,24 @@ def ingest() -> dict:
                 skipped += 1
                 continue
 
-            fact = FactEnergyMix(
+            stmt = pg_insert(FactEnergyMix).values(
                 country_id=country.id,
                 source_id=source_map[fuel].id,
-                period_start=period_from.replace(tzinfo=None),
-                period_end=period_to.replace(tzinfo=None),
+                period_start=period_start_naive,
+                period_end=period_end_naive,
                 percentage=round(float(item["perc"]), 2),
+            ).on_conflict_do_nothing(
+                constraint="uq_fact_energy_mix",
             )
-            session.add(fact)
-            inserted += 1
+
+            result = session.execute(stmt)
+            if result.rowcount > 0:
+                inserted += 1
+            else:
+                skipped += 1
 
         session.commit()
-        print(f"\n Ingested {inserted} rows (skipped {skipped})")
+        print(f"\n Ingested {inserted} rows (skipped {skipped} duplicates)")
 
         return {
             "period_from": period_from.isoformat(),
