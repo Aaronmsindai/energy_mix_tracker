@@ -14,13 +14,13 @@ import streamlit as st
 from sqlalchemy import create_engine
 
 
-try:
-    DB_URL = st.secrets["DATABASE_URL"]
-except (KeyError, FileNotFoundError):
-    DB_URL = os.getenv("DATABASE_URL", "postgresql://localhost/energy_tracker")
-
 st.set_page_config(page_title="UK Energy Mix Tracker", page_icon="⚡", layout="wide")
 
+# Resolve DB URL: secrets → env var → localhost fallback
+try:
+    DB_URL = st.secrets["DATABASE_URL"]
+except Exception:
+    DB_URL = os.getenv("DATABASE_URL", "postgresql://localhost/energy_tracker")
 
 @st.cache_resource
 def get_engine():
