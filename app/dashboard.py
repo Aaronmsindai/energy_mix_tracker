@@ -10,17 +10,19 @@ sys.path.insert(0, str(ROOT))
 
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 from sqlalchemy import create_engine
 
 
 st.set_page_config(page_title="UK Energy Mix Tracker", page_icon="⚡", layout="wide")
 
-# Resolve DB URL: secrets → env var → localhost fallback
+# Resolve DB URL: secrets -> env var -> localhost
 try:
     DB_URL = st.secrets["DATABASE_URL"]
 except Exception:
     DB_URL = os.getenv("DATABASE_URL", "postgresql://localhost/energy_tracker")
+
 
 @st.cache_resource
 def get_engine():
@@ -74,6 +76,12 @@ def load_row_count() -> int:
     return int(df["n"].iloc[0])
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def run_forecast():
+    from src.forecast import forecast_next_24h
+    return forecast_next_24h(holdout=48)
+
+
 st.title("⚡ UK Energy Mix Tracker")
 st.markdown("Real-time breakdown of the UK electricity grid from the Carbon Intensity API.")
 st.divider()
@@ -114,6 +122,74 @@ fig_bar = px.bar(avg, x="avg_pct", y="source", orientation="h",
                  color="is_renewable", color_discrete_map={1: "#2ca02c", 0: "#d62728"})
 fig_bar.update_layout(xaxis_title="Average %", yaxis_title="", showlegend=False)
 st.plotly_chart(fig_bar, use_container_width=True)
+
+
+# ============================================================
+# 24-HOUR SARIMA FORECAST
+# ============================================================
+st.divider()
+st.subheader("📈 24-Hour Renewables Forecast")
+st.caption("SARIMA(1,1,1)(1,1,1,48) — evaluated on the last 24-hour holdout.")
+
+try:
+    with st.spinner("Fitting SARIMA model... (~2 min on first run)"):
+        fc = run_forecast()
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("MAPE", f"{fc['mape']}%")
+    m2.metric("RMSE", f"{fc['rmse']}%")
+    m3.metric("AIC", f"{fc['aic']}")
+
+    plot_start = max(0, len(fc["train"]) - 144)
+    train_tail = fc["train"].iloc[plot_start:]
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Scatter(
+        x=train_tail.index, y=train_tail.values,
+        mode="lines", name="Training data",
+        line=dict(color="#2ca02c", width=1),
+    ))
+    fig.add_trace(go.Scatter(
+        x=fc["test"].index, y=fc["test"].values,
+        mode="lines", name="Actual (holdout)",
+        line=dict(color="#1f77b4", width=2),
+    ))
+    fig.add_trace(go.Scatter(
+        x=fc["pred"].index, y=fc["pred"].values,
+        mode="lines", name="Forecast",
+        line=dict(color="#d62728", width=2, dash="dash"),
+    ))
+    fig.add_trace(go.Scatter(
+        x=fc["ci"].index, y=fc["ci"].iloc[:, 1],
+        mode="lines", line=dict(width=0),
+        showlegend=False, hoverinfo="skip",
+    ))
+    fig.add_trace(go.Scatter(
+        x=fc["ci"].index, y=fc["ci"].iloc[:, 0],
+        mode="lines", line=dict(width=0),
+        fill="tonexty", fillcolor="rgba(214,39,40,0.15)",
+        name="95% CI", hoverinfo="skip",
+    ))
+
+    fig.update_layout(
+        title="SARIMA Forecast vs Actual — Renewables %",
+        xaxis_title="Date",
+        yaxis_title="Renewables %",
+        hovermode="x unified",
+        height=500,
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.caption(
+        f"Trained on {len(fc['train'])} periods. "
+        f"Evaluated on the final {len(fc['pred'])} periods (24 hours)."
+    )
+
+except Exception as e:
+    st.error(f"❌ Forecast failed: {e}")
+    st.info("Forecast requires at least 200 periods of data.")
+
 
 st.divider()
 st.caption("Built with Python, PostgreSQL, and Streamlit.")
