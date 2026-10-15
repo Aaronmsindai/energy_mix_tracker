@@ -5,8 +5,7 @@ Fetches historical generation mix data from the Carbon Intensity API
 and inserts it into PostgreSQL. Idempotent — re-running skips existing
 periods.
 
-The API returns data in 30-minute blocks. We chunk requests in 14-day
-windows (API limit) and iterate.
+Uses batched inserts (one statement per period) for cloud database speed.
 
 Run:
     python -m src.backfill
@@ -24,7 +23,7 @@ import requests
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-# Add project root to path (for `python src/backfill.py` usage)
+# Add project root to path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
@@ -34,8 +33,8 @@ from src.models import DimCountry, DimEnergySource, FactEnergyMix, RawGeneration
 
 API_BASE = "https://api.carbonintensity.org.uk"
 COUNTRY_CODE = "UK"
-CHUNK_DAYS = 14  # API max window for the intensity endpoint
-SLEEP_BETWEEN_REQUESTS = 1.0  # seconds, to be polite to the API
+CHUNK_DAYS = 3
+SLEEP_BETWEEN_REQUESTS = 1.0
 
 
 def fetch_generation_range(start: datetime, end: datetime) -> dict:
@@ -44,7 +43,7 @@ def fetch_generation_range(start: datetime, end: datetime) -> dict:
     end_str = end.strftime("%Y-%m-%dT%H:%MZ")
     url = f"{API_BASE}/generation/{start_str}/{end_str}"
     print(f"  → {start_str} to {end_str}")
-    response = requests.get(url, timeout=30)
+    response = requests.get(url, timeout=60)
     response.raise_for_status()
     return response.json()
 
@@ -55,7 +54,7 @@ def parse_timestamps(period_str: str) -> datetime:
 
 
 def ingest_chunk(session, country_id: int, source_map: dict, data_item: dict) -> int:
-    """Insert one period's fuel mix. Returns number of rows inserted."""
+    """Insert one period's fuel mix as a single batched INSERT."""
     period_from = parse_timestamps(data_item["from"])
     period_to = parse_timestamps(data_item["to"])
     mix = data_item["generationmix"]
@@ -63,25 +62,29 @@ def ingest_chunk(session, country_id: int, source_map: dict, data_item: dict) ->
     period_start_naive = period_from.replace(tzinfo=None)
     period_end_naive = period_to.replace(tzinfo=None)
 
-    inserted = 0
+    # Build all rows for this period at once
+    rows = []
     for item in mix:
         fuel = item["fuel"]
         if fuel not in source_map:
             continue
+        rows.append({
+            "country_id": country_id,
+            "source_id": source_map[fuel].id,
+            "period_start": period_start_naive,
+            "period_end": period_end_naive,
+            "percentage": round(float(item["perc"]), 2),
+        })
 
-        stmt = pg_insert(FactEnergyMix).values(
-            country_id=country_id,
-            source_id=source_map[fuel].id,
-            period_start=period_start_naive,
-            period_end=period_end_naive,
-            percentage=round(float(item["perc"]), 2),
-        ).on_conflict_do_nothing(constraint="uq_fact_energy_mix")
+    if not rows:
+        return 0
 
-        result = session.execute(stmt)
-        if result.rowcount > 0:
-            inserted += 1
-
-    return inserted
+    # Single batched INSERT — one network round-trip instead of 9
+    stmt = pg_insert(FactEnergyMix).values(rows).on_conflict_do_nothing(
+        constraint="uq_fact_energy_mix"
+    )
+    result = session.execute(stmt)
+    return result.rowcount
 
 
 def backfill(days: int = 30) -> dict:
@@ -124,7 +127,7 @@ def backfill(days: int = 30) -> dict:
                     fetched_at=datetime.now(timezone.utc).replace(tzinfo=None),
                     api_from=current.replace(tzinfo=None),
                     api_to=chunk_end.replace(tzinfo=None),
-                    raw_json=json.dumps(payload)[:500000],  # cap size
+                    raw_json=json.dumps(payload)[:500000],
                 )
                 session.add(raw)
 
@@ -133,6 +136,7 @@ def backfill(days: int = 30) -> dict:
                     total_periods += 1
 
                 session.commit()
+                print(f"     committed through {chunk_end.strftime('%Y-%m-%d')}")
 
             except Exception as e:
                 session.rollback()
