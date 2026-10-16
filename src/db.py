@@ -19,6 +19,9 @@ try:
     DB_URL = st.secrets["DATABASE_URL"]
 except (KeyError, FileNotFoundError, ImportError):
     DB_URL = os.getenv("DATABASE_URL", "postgresql://localhost/energy_tracker")
+    # Force SQLAlchemy to use psycopg3 driver
+if DB_URL.startswith("postgresql://"):
+    DB_URL = DB_URL.replace("postgresql://", "postgresql+psycopg://", 1)
 
 # Force SQLAlchemy to use psycopg3
 if DB_URL.startswith("postgresql://"):
